@@ -1,0 +1,226 @@
+---
+title: 'Practica: Proyecto de visualización'
+author: "Francisco Heredia Mañas"
+date: "Enero 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: '2'
+    df_print: paged
+institute: Universitat Oberta de Catalunya
+header-includes:
+- \renewcommand{\contentsname}{Contenido}
+- \usepackage{fancyhdr}
+- \usepackage{tabularx}
+- \pagestyle{fancy}
+- "\\fancyhead[L]{M2.859 - Visualización de datos}"
+- "\\fancyhead[R]{Máster de Ciencia de Datos - UOC}"
+- \renewcommand{\headrulewidth}{0.4pt}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(networkD3)
+library(tidyverse)
+library(scales)
+library(plotly)
+```
+
+```{r carga}
+# Carga
+male_players   <- read.csv("../../male_players.csv", stringsAsFactors = FALSE)
+female_players <- read.csv("../../female_players.csv", stringsAsFactors = FALSE)
+
+# Añadir columna de género
+male_players$gender   <- "Male"
+female_players$gender <- "Female"
+
+# Identificar columnas comunes
+common_cols <- intersect(names(male_players), names(female_players))
+# Union dataframe
+all_players <- bind_rows(
+  male_players %>% select(all_of(common_cols)),
+  female_players %>% select(all_of(common_cols))
+)
+```
+
+```{r preprocesamiento}
+df_final <- all_players %>%
+  # Filtro solo FIFA 24
+  filter(fifa_version == "24" | fifa_version == 24) %>%
+  
+  # Filtro ligas principales
+  filter(league_name %in% c(
+      "Premier League", "La Liga", "Bundesliga", "Serie A", "Ligue 1", 
+      "Liga Portugal", "Eredivisie",
+      "Feminine Division 1","Women's Super League", "Bundesliga Women",
+      "Primera Division Women"
+    )) %>%
+  
+  # Creación de métricas
+  mutate(
+    
+    # Metrica eficiencia salarial
+    eficiencia_salarial = overall / (wage_eur + 1), 
+    
+    # Metrica indice proyeccion
+    indice_proyeccion = (potential - overall) / age,
+    
+    # Metrica gap de mercado
+    gap_mercado = release_clause_eur - value_eur,
+    
+    # Agrupación de nivel
+    overall_tier = case_when(
+      overall >= 90 ~ "Elite (90+)",
+      overall >= 85 ~ "Top Class (85-89)",
+      overall >= 80 ~ "Bueno (80-84)",
+      overall >= 75 ~ "Medio (75-79)",
+      TRUE ~ "Bajo (<75)"
+    ),
+    
+    # Agrupación de Posiciones
+    general_position = case_when(
+      club_position %in% c("ST", "CF", "LW", "RW", "LF", "RF", "LS", "RS") ~ "Delantero",
+      club_position %in% c("CAM", "CM", "CDM", "LM", "RM", "LCM", "RCM") ~ "Centrocampista",
+      club_position %in% c("CB", "LB", "RB", "LWB", "RWB", "LCB", "RCB") ~ "Defensa",
+      club_position == "GK" ~ "Portero",
+      TRUE ~ "Otros"
+    )
+  ) %>%
+  
+  # Selección de variables
+  select(
+    short_name,          # Nombre
+    age, height_cm, weight_kg, # Físico
+    overall, potential,  # Rendimiento
+    value_eur, wage_eur, release_clause_eur, # Económico
+    club_name, league_name, club_position, # Contexto
+    nationality_name, preferred_foot, gender, # Demográfico
+    eficiencia_salarial, indice_proyeccion, gap_mercado, # Nuevas métricas
+    general_position, overall_tier # Variables de apoyo
+  ) %>%
+  
+  # Limpieza de filas vacías clave
+  filter(!is.na(value_eur), !is.na(wage_eur), !is.na(overall))
+
+write.csv(df_final, "../data/all_players.csv", row.names = FALSE)
+```
+
+```{r informacion}
+cat("=== DIMENSIONES DEL DATASET ===\n")
+cat("Número de Jugadores (Filas):", nrow(df_final), "\n")
+cat("Número de Variables (Columnas):", ncol(df_final), "\n\n")
+
+cat("=== ESTRUCTURA DE LAS VARIABLES ===\n")
+glimpse(df_final)
+cat("\n")
+```
+
+```{r dataset1}
+# Dataset 1: Posiciones
+data_posiciones <- df_final %>%
+  group_by(general_position) %>%
+  summarise(
+    avg_value = round(mean(value_eur, na.rm = TRUE), 0),
+    avg_wage = round(mean(wage_eur, na.rm = TRUE), 0),
+    avg_overall = round(mean(overall, na.rm = TRUE), 1),
+    count = n()
+  ) %>% filter(general_position != "Otros") %>%
+ rename(
+    "Posición" = general_position,
+    "Valor de Mercado (€)" = avg_value,
+    "Salario Semanal (€)" = avg_wage,
+    "Calidad Media (0-100)" = avg_overall,
+    "Número de Jugadores" = count
+  )
+write.csv(data_posiciones, "../data/1_posiciones.csv", row.names = FALSE)
+```
+
+```{r dataset2}
+data_ligas <- df_final %>%
+  mutate(country = case_when(
+    # Reino Unido
+    league_name %in% c("Premier League", "Women's Super League") ~ "Reino Unido",
+    # España
+    league_name %in% c("La Liga", "Primera Division Women") ~ "España",
+    # Alemania
+    league_name %in% c("Bundesliga", "Bundesliga Women") ~ "Alemania",
+    # Francia
+    league_name %in% c("Ligue 1", "Feminine Division 1") ~ "Francia",
+    # Italia
+    league_name == "Serie A" ~ "Italia",
+    # Portugal
+    league_name == "Liga Portugal" ~ "Portugal",
+    # Holanda
+    league_name == "Eredivisie" ~ "Holanda",
+    TRUE ~ "Others"
+  )) %>%
+  group_by(country) %>%
+  summarise(
+    count = n(),
+    avg_wage = round(mean(wage_eur, na.rm = TRUE), 0),
+    avg_value = round(mean(value_eur, na.rm = TRUE), 0),
+    avg_eficiencia = mean(eficiencia_salarial, na.rm = TRUE), 
+    avg_gap = round(mean(gap_mercado, na.rm = TRUE), 0)
+  ) %>%
+  
+  rename(
+    "País" = country,
+    "Eficiencia (Ratio)" = avg_eficiencia,
+    "Salario Semanal Promedio (€)" = avg_wage,
+    "Valor de Mercado Promedio (€)" = avg_value,
+    "Gap de Mercado (€)" = avg_gap,
+    "Total Jugadores" = count
+  )
+
+write.csv(data_mapa, "../data/2_ligas.csv", row.names = FALSE)
+```
+
+```{r dataset3}
+# Dataset 3: Género
+data_genero <- df_final %>%
+  filter(overall_tier != "Bajo (<75)") %>%
+  group_by(overall_tier, gender) %>%
+  summarise(
+    avg_wage = round(mean(wage_eur, na.rm = TRUE), 0),
+    avg_value = round(mean(value_eur, na.rm = TRUE), 0),
+    gap_salarial = round(mean(gap_mercado, na.rm = TRUE), 0),
+    count = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(gender = ifelse(gender == "Male", "Hombre", "Mujer")) %>%
+  rename(
+    "Nivel de Habilidad" = overall_tier,
+    "Género" = gender,
+    "Salario Semanal Medio (€)" = avg_wage,
+    "Valor Medio (€)" = avg_value,
+    "Brecha de Mercado (€)" = gap_salarial,
+    "Total Jugadores" = count
+  )
+
+write.csv(data_genero, "../data/3_genero.csv", row.names = FALSE)
+```
+
+```{r dataset4}
+# Dataset 4: Edad
+data_edad <- df_final %>%
+  filter(age <= 38) %>%
+  group_by(age) %>%
+  summarise(
+    avg_potential = round(mean(potential, na.rm = TRUE), 1),
+    avg_value = round(mean(value_eur, na.rm = TRUE), 0),
+    avg_wage = round(mean(wage_eur, na.rm = TRUE), 0)
+  ) %>%
+  rename(
+    "Edad" = age,
+    "Potencial Medio (0-100)" = avg_potential,
+    "Valor de Mercado (€)" = avg_value,
+    "Salario (€)" = avg_wage
+  )
+write.csv(data_edad, "../data/4_edad.csv", row.names = FALSE)
+```
